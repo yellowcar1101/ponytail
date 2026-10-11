@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { getDefaultMode, getClaudeDir, isShellSafe } = require('./ponytail-config');
 const { getPonytailInstructions } = require('./ponytail-instructions');
 const {
@@ -66,7 +67,10 @@ let output = getPonytailInstructions(mode);
 // 2b. Codebase map: what already exists, so "reuse first" costs no search. Fail open: a map
 // that cannot be built must never block or slow the session start.
 if (mode !== 'review' && process.env.PONYTAIL_MAP !== '0') try {
-  const map = require('./ponytail-map').buildMap(process.cwd());
+  // A synchronous scan blocks fallback timers; bound it outside this process.
+  const map = execFileSync(process.execPath, [require.resolve('./ponytail-map'), process.cwd()], {
+    encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
   if (map) output += '\n\n' + map;
 } catch (e) { /* no map */ }
 
