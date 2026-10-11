@@ -11,17 +11,10 @@
 // "^general$" is exact. Unset means inject into every subagent, as before.
 
 const { getPonytailInstructions } = require('./ponytail-instructions');
-const { readMode, writeHookOutput } = require('./ponytail-runtime');
+const { isCodex, readMode, writeHookOutput } = require('./ponytail-runtime');
 const vm = require('vm');
 
-const mode = readMode();
-
-// Absent flag or off → ponytail isn't active; inject nothing.
-if (!mode || mode === 'off') {
-  process.exit(0);
-}
-
-function inject() {
+function inject(mode) {
   try {
     writeHookOutput('SubagentStart', mode, getPonytailInstructions(mode));
   } catch (e) {
@@ -39,18 +32,15 @@ try {
   matcherRe = null;
 }
 
-// No matcher → keep the original synchronous, stdin-independent path. On Windows
-// the PowerShell `if {}` wrapper can swallow the piped JSON so stdin 'end' never
-// fires (#443); the default path must not wait on stdin or it would stall every
-// subagent spawn.
-if (!matcherRe) {
-  inject();
+// Other hosts keep the synchronous path when no matcher is configured. Codex
+// needs stdin to identify the parent session when two chats share a project.
+if (!isCodex && !matcherRe) {
+  const mode = readMode();
+  if (mode && mode !== 'off') inject(mode);
   process.exit(0);
 }
 
-// Matcher set → read agent_type from stdin and skip only on a definite
-// mismatch. Missing/unparseable agent_type, a stdin error, or the timeout all
-// fail open (inject), so scoping never silently drops the persona.
+// Read session_id as well as agent_type for Codex subagents.
 let input = '';
 let done = false;
 
@@ -59,12 +49,18 @@ function finish() {
   done = true;
 
   let agentType = '';
+  let sessionId = '';
   try {
     // Strip UTF-8 BOM some shells prepend when piping (breaks JSON.parse)
-    agentType = String(JSON.parse(input.replace(/^\uFEFF/, '')).agent_type || '').trim();
+    const data = JSON.parse(input.replace(/^\uFEFF/, ''));
+    agentType = String(data.agent_type || '').trim();
+    sessionId = data.session_id;
   } catch (e) {
-    // Unparseable payload — fall through and inject to be safe.
+    // Unparseable payload — use the legacy shared mode.
   }
+  const mode = readMode(sessionId);
+  if (!mode || mode === 'off') return;
+  if (!matcherRe) { inject(mode); return; }
   // .test() is synchronous, so a backtracking-heavy matcher like (a+)+$ would
   // block the event loop and the fallback timer below could never fire (#658).
   // Run it under a vm timeout; a timeout fails open like every other doubt.
@@ -79,7 +75,7 @@ function finish() {
   if (!matches) {
     process.exit(0);
   }
-  inject();
+  inject(mode);
 }
 
 process.stdin.on('data', chunk => { input += chunk; });
@@ -88,7 +84,7 @@ process.stdin.on('data', chunk => { input += chunk; });
 process.stdin.on('end', () => { finish(); process.exit(0); });
 // Never block the session (#443): recover on stdin error or a short fallback.
 // The fallback stays ref'd: on Windows a stuck ref'd stdin keeps the loop
-// alive and an unref'd timer is never scheduled, so the hook hung to the
-// external watchdog instead of exiting at 1s (#790).
+// alive and an unref'd timer is never scheduled (#790). Without a matcher,
+// stop after 250ms; a matcher keeps the previous 1s limit.
 process.stdin.on('error', () => { finish(); process.exit(0); });
-setTimeout(() => { finish(); process.exit(0); }, 1000);
+setTimeout(() => { finish(); process.exit(0); }, matcherRe ? 1000 : 250);

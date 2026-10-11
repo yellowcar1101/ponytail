@@ -227,7 +227,7 @@ result = run(
   JSON.stringify({ prompt: 'normal mode' }),
 );
 assert.equal(result.status, 0, result.stderr);
-assert.equal(fs.existsSync(codexState), false);
+assert.equal(fs.readFileSync(codexState, 'utf8'), 'off');
 output = JSON.parse(result.stdout);
 assert.equal(output.systemMessage, undefined, 'Codex must not emit systemMessage (#605)');
 assert.match(
@@ -235,6 +235,25 @@ assert.match(
   /PONYTAIL MODE OFF/,
   'deactivation still surfaces via the hook context line',
 );
+
+// Resume and compaction keep the user's level, including an explicit off.
+// A new session and /clear still start from the configured default.
+for (const source of ['resume', 'compact']) {
+  result = run('ponytail-activate.js', codexEnv, JSON.stringify({ source }));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(codexState, 'utf8'), 'off');
+  assert.equal(result.stdout, '');
+}
+result = run('ponytail-activate.js', codexEnv, JSON.stringify({ source: 'startup' }));
+assert.equal(fs.readFileSync(codexState, 'utf8'), 'ultra');
+result = run('ponytail-mode-tracker.js', codexEnv, JSON.stringify({ prompt: '@ponytail lite' }));
+for (const source of ['resume', 'compact']) {
+  result = run('ponytail-activate.js', codexEnv, JSON.stringify({ source }));
+  assert.equal(fs.readFileSync(codexState, 'utf8'), 'lite');
+  assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /level: lite/);
+}
+result = run('ponytail-activate.js', codexEnv, JSON.stringify({ source: 'clear' }));
+assert.equal(fs.readFileSync(codexState, 'utf8'), 'ultra');
 
 // A request that merely mentions "normal mode" must not deactivate ponytail.
 result = run('ponytail-mode-tracker.js', codexEnv, JSON.stringify({ prompt: '@ponytail lite' }));
@@ -898,6 +917,35 @@ assert.equal(
   run('ponytail-mode-tracker.js', siblingEnv, JSON.stringify({ prompt: '/ponytail lite' }));
   assert.equal(subagentLevel(nestedEnv), 'ultra', 'a sibling mode switch must not change the nested project');
   assert.equal(subagentLevel(siblingEnv), 'lite');
+}
+
+// Codex conversations in one project must not share a mode, even after resume.
+{
+  const dataDir = path.join(temp, 'same-project-codex');
+  const env = { HOME: home, USERPROFILE: home, PLUGIN_DATA: dataDir, CLAUDE_PROJECT_DIR: '/work/shared', PONYTAIL_DEFAULT_MODE: 'full' };
+  const event = (session_id, extra = {}) => JSON.stringify({ session_id, ...extra });
+  const modeFor = (session_id) => {
+    const r = run('ponytail-subagent.js', env, event(session_id));
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.additionalContext.match(/level: (\w+)/)[1] : null;
+  };
+  run('ponytail-activate.js', env, event('session-a', { source: 'startup' }));
+  run('ponytail-mode-tracker.js', env, event('session-a', { prompt: '/ponytail ultra' }));
+  run('ponytail-activate.js', env, event('session-b', { source: 'startup' }));
+  assert.equal(modeFor('session-a'), 'ultra');
+  assert.equal(modeFor('session-b'), 'full');
+  run('ponytail-mode-tracker.js', env, event('session-b', { prompt: '/ponytail lite' }));
+  run('ponytail-activate.js', env, event('session-a', { source: 'resume' }));
+  run('ponytail-activate.js', env, event('session-b', { source: 'compact' }));
+  assert.equal(modeFor('session-a'), 'ultra');
+  assert.equal(modeFor('session-b'), 'lite');
+  run('ponytail-mode-tracker.js', env, event('session-a', { prompt: '/ponytail off' }));
+  run('ponytail-activate.js', env, event('session-a', { source: 'compact' }));
+  assert.equal(modeFor('session-a'), null);
+  assert.equal(modeFor('session-b'), 'lite');
+  run('ponytail-activate.js', env, event('session-a', { source: 'clear' }));
+  assert.equal(modeFor('session-a'), 'full');
+  assert.equal(modeFor('session-b'), 'lite');
 }
 
 // #639: bare /ponytail switches ponytail on when it is off, and only reports

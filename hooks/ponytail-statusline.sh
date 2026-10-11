@@ -4,6 +4,7 @@ flag="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.ponytail-active"
 [ -f "$flag" ] || exit 0
 
 mode=$(head -n1 "$flag" | tr -d '[:space:]')
+[ "$mode" = "off" ] && exit 0
 
 # ultra is the high-intensity mode; flag it amber so it stands out from the
 # default green at a glance. The level is still in the text, so color is a

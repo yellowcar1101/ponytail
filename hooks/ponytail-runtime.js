@@ -46,8 +46,8 @@ const statePath = path.join(stateDir, STATE_FILE);
 // Claude Code hands every hook its project dir, so the live mode is kept per
 // project and concurrent sessions in different repos stop overwriting each other
 // (#662, #809). Hosts without it keep the single shared flag.
-// ponytail: sessions in the SAME repo still share one mode, and the statusline
-// scripts read the shared flag (last write wins); key by session_id if either matters.
+// Codex conversations use session_id to keep independent modes in one project.
+// Other hosts retain their existing project/shared state and statusline behavior.
 const projectDir = (process.env.CLAUDE_PROJECT_DIR || '').trim();
 // Replacing separators with '_' aliases e.g. /work/a/b and /work/a_b (#662).
 // Do not read old sanitized keys: they cannot be assigned to one project safely.
@@ -56,25 +56,31 @@ const projectStatePath = projectDir
     createHash('sha256').update(path.normalize(projectDir)).digest('hex'))
   : null;
 
-// The shared flag is still written, for the statusline and project-less hosts.
-function setMode(mode) {
-  for (const file of [projectStatePath, statePath]) {
+function sessionStatePath(sessionId) {
+  return isCodex && typeof sessionId === 'string' && sessionId
+    ? path.join(stateDir, 'ponytail-sessions', createHash('sha256').update(sessionId).digest('hex'))
+    : null;
+}
+
+// Keep the old flags for statuslines and hosts that omit session_id.
+function setMode(mode, sessionId) {
+  for (const file of [sessionStatePath(sessionId), projectStatePath, statePath]) {
     if (!file) continue;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, mode);
   }
 }
 
-function clearMode() {
-  for (const file of [projectStatePath, statePath]) {
+function clearMode(sessionId) {
+  for (const file of [sessionStatePath(sessionId), projectStatePath, statePath]) {
     if (file) try { fs.unlinkSync(file); } catch (e) {}
   }
 }
 
 // Live mode written by activate/mode-tracker. Absent flag = ponytail off.
-function readMode() {
+function readMode(sessionId) {
   try {
-    return fs.readFileSync(projectStatePath || statePath, 'utf8').trim() || null;
+    return fs.readFileSync(sessionStatePath(sessionId) || projectStatePath || statePath, 'utf8').trim() || null;
   } catch (e) {
     return null;
   }

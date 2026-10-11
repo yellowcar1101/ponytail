@@ -11,6 +11,7 @@ try {
 } catch {
     exit 0
 }
+if ($Mode -eq "off") { exit 0 }
 
 $Esc = [char]27
 # ultra is the high-intensity mode; flag it amber so it stands out from the

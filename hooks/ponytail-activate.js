@@ -19,19 +19,23 @@ const {
   isCodex,
   isCopilot,
   isCursor,
+  readMode,
   setMode,
   writeHookOutput,
 } = require('./ponytail-runtime');
+const { normalizePersistedMode } = require('./ponytail-config');
 
 const claudeDir = getClaudeDir();
 const settingsPath = path.join(claudeDir, 'settings.json');
 
-const mode = getDefaultMode();
+function activate(source, sessionId) {
+const continuing = source === 'resume' || source === 'compact';
+const mode = continuing ? (normalizePersistedMode(readMode(sessionId)) || getDefaultMode()) : getDefaultMode();
 
 // "off" mode — skip activation entirely, don't write flag or emit rules
 if (mode === 'off') {
-  clearMode();
-  process.exit(0);
+  if (!continuing) clearMode(sessionId);
+  return;
 }
 
 // Cursor with the always-on rule in the workspace: the rule already carries the
@@ -45,13 +49,13 @@ if (isCursor) {
     } catch (e) {
       // Silent fail — stdout closed/EPIPE at hook exit must not surface as a hook failure
     }
-    process.exit(0);
+    return;
   }
 }
 
 // 1. Write flag file
 try {
-  setMode(mode);
+  setMode(mode, sessionId);
 } catch (e) {
   // Silent fail -- flag is best-effort, don't block the hook
 }
@@ -167,3 +171,25 @@ try {
 } catch (e) {
   // Silent fail — stdout closed/EPIPE at hook exit must not surface as a hook failure
 }
+}
+
+let input = '';
+let done = false;
+function finish() {
+  if (done) return;
+  done = true;
+  clearTimeout(fallback);
+  let source = '';
+  let sessionId = '';
+  try {
+    const data = JSON.parse(input.replace(/^\uFEFF/, ''));
+    source = data.source;
+    sessionId = data.session_id;
+  } catch (e) { /* no hook input */ }
+  activate(source, sessionId);
+}
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', finish);
+process.stdin.on('error', finish);
+// Hook stdin may never close on Windows; finish without blocking the session.
+const fallback = setTimeout(() => { finish(); process.exit(0); }, 1000);
